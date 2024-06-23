@@ -40,32 +40,46 @@ bool ProjectionTdFactor::Evaluate(double const *const *parameters, double *resid
     Eigen::Vector3d Pj(parameters[1][0], parameters[1][1], parameters[1][2]);
     Eigen::Quaterniond Qj(parameters[1][6], parameters[1][3], parameters[1][4], parameters[1][5]);
 
+    // 相机和imu外参
     Eigen::Vector3d tic(parameters[2][0], parameters[2][1], parameters[2][2]);
     Eigen::Quaterniond qic(parameters[2][6], parameters[2][3], parameters[2][4], parameters[2][5]);
-
+    // 逆深度
     double inv_dep_i = parameters[3][0];
-
+    // 时延
     double td = parameters[4][0];
 
+    // 时延补偿到观测的特征点坐标上
+    // eg: t_imu = t_cam + td
+    // t_imu1 = t_cam + td_i
+    // t_imu2 = t_cam + td
+    // delata_t = t_imu2 -t_imu1 = td - td_i 相对于上次的时延增量
+    // camera回溯补偿该增量到观测的特征点坐标上
+    // TR/ROW * row_i是相机rolling到这一行时所用的时间
     Eigen::Vector3d pts_i_td, pts_j_td;
-
     pts_i_td = pts_i - (td - td_i + TR / ROW * row_i) * velocity_i;
     pts_j_td = pts_j - (td - td_j + TR / ROW * row_j) * velocity_j;
+    
+    // 地图点在i帧相机坐标系下坐标
     Eigen::Vector3d pts_camera_i = pts_i_td / inv_dep_i;
+    // 转成第i帧imu坐标系
     Eigen::Vector3d pts_imu_i = qic * pts_camera_i + tic;
+    // 转成世界坐标系
     Eigen::Vector3d pts_w = Qi * pts_imu_i + Pi;
+    // 转到第j帧imu坐标系
     Eigen::Vector3d pts_imu_j = Qj.inverse() * (pts_w - Pj);
+    // 转到第j帧相机坐标系
     Eigen::Vector3d pts_camera_j = qic.inverse() * (pts_imu_j - tic);
     Eigen::Map<Eigen::Vector2d> residual(residuals);
 
 #ifdef UNIT_SPHERE_ERROR 
     residual =  tangent_base * (pts_camera_j.normalized() - pts_j_td.normalized());
 #else
-    double dep_j = pts_camera_j.z();
+    double dep_j = pts_camera_j.z(); // 第j帧相机系下的深度
+    // 带时延的重投影误差
     residual = (pts_camera_j / dep_j).head<2>() - pts_j_td.head<2>();
 #endif
 
-    residual = sqrt_info * residual;
+    residual = sqrt_info * residual; // 误差乘上信息矩阵
 
     if (jacobians)
     {
@@ -180,8 +194,6 @@ void ProjectionTdFactor::check(double **parameters)
     double td = parameters[4][0];
 
     Eigen::Vector3d pts_i_td, pts_j_td;
-    //pts_i_td 处理时间同步误差和Rolling shutter时间后，角点在归一化平面的坐标。
-    //TR / ROW * row_i就是相机 rolling 到这一行时所用的时间
     pts_i_td = pts_i - (td - td_i + TR / ROW * row_i) * velocity_i;
     pts_j_td = pts_j - (td - td_j + TR / ROW * row_j) * velocity_j;
     Eigen::Vector3d pts_camera_i = pts_i_td / inv_dep_i;

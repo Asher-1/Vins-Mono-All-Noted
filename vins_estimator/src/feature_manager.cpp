@@ -234,6 +234,7 @@ void FeatureManager::triangulate(Vector3d Ps[], Vector3d tic[], Matrix3d ric[])
 
         //R0 t0为第i帧相机坐标系到世界坐标系的变换矩阵
         Eigen::Matrix<double, 3, 4> P0;
+        // Twi -> Twc，第一个观察到这个特征点的KF的位姿
         Eigen::Vector3d t0 = Ps[imu_i] + Rs[imu_i] * tic[0];
         //R_w_ci = R_w_b * R_b_ci
         Eigen::Matrix3d R0 = Rs[imu_i] * ric[0];
@@ -272,7 +273,7 @@ void FeatureManager::triangulate(Vector3d Ps[], Vector3d tic[], Matrix3d ric[])
         double svd_method = svd_V[2] / svd_V[3];
         //it_per_id->estimated_depth = -b / A;
         //it_per_id->estimated_depth = svd_V[2] / svd_V[3];
-
+        // 得到的深度值实际上就是第一个观察到这个特征点的相机坐标系下的深度值
         it_per_id.estimated_depth = svd_method;
         //it_per_id->estimated_depth = INIT_DEPTH;
 
@@ -315,15 +316,16 @@ void FeatureManager::removeBackShiftDepth(Eigen::Matrix3d marg_R, Eigen::Vector3
         //特征点起始帧是最老帧
         else
         {
+            // 取出归一化相机坐标系坐标
             Eigen::Vector3d uv_i = it->feature_per_frame[0].point;  
             it->feature_per_frame.erase(it->feature_per_frame.begin());
             //特征点只在最老帧被观测则直接移除
-            if (it->feature_per_frame.size() < 2)
+            if (it->feature_per_frame.size() < 2) // 如果这个地图点没有至少被两帧看到
             {
                 feature.erase(it);
                 continue;
             }
-            else
+            else // 进行管辖权的转交
             {
                 //pts_i为特征点在最老帧坐标系下的三维坐标
                 //w_pts_i为特征点在世界坐标系下的三维坐标
@@ -332,7 +334,8 @@ void FeatureManager::removeBackShiftDepth(Eigen::Matrix3d marg_R, Eigen::Vector3
                 Eigen::Vector3d w_pts_i = marg_R * pts_i + marg_P;
                 Eigen::Vector3d pts_j = new_R.transpose() * (w_pts_i - new_P);
                 double dep_j = pts_j(2);
-                if (dep_j > 0)
+                if (dep_j > 0) // 看看深度是否有效
+                    // 有效的话就得到在当下最老帧下的深度值
                     it->estimated_depth = dep_j;
                 else
                     it->estimated_depth = INIT_DEPTH;
@@ -369,21 +372,25 @@ void FeatureManager::removeBack()
     }
 }
 
-//边缘化次新帧时，对特征点在次新帧的信息进行移除处理
+// 边缘化次新帧时，对特征点在次新帧的信息进行移除处理
+// 对margin倒数第二帧进行处理
 void FeatureManager::removeFront(int frame_count)
 {
     for (auto it = feature.begin(), it_next = feature.begin(); it != feature.end(); it = it_next)
     {
         it_next++;
         //起始帧为最新帧的滑动成次新帧
+        // 如果地图点被最后一帧看到，由于滑窗，他的起始帧减1
         if (it->start_frame == frame_count)
         {
             it->start_frame--;
         }
         else
         {
+            // 倒数第二帧在这个地图点对应KF vector的idx
             int j = WINDOW_SIZE - 1 - it->start_frame;
             //如果次新帧之前已经跟踪结束则什么都不做
+            // 如果该地图点不能被倒数第二帧看到，那没什么好做的
             if (it->endFrame() < frame_count - 1)
                 continue;
             //如果在次新帧仍被跟踪，则删除feature_per_frame中次新帧对应的FeaturePerFrame
@@ -400,6 +407,7 @@ double FeatureManager::compensatedParallax2(const FeaturePerId &it_per_id, int f
 {
     //check the second last frame is keyframe or not
     //parallax betwwen seconde last frame and third last frame
+    // 找到相邻两帧
     const FeaturePerFrame &frame_i = it_per_id.feature_per_frame[frame_count - 2 - it_per_id.start_frame];
     const FeaturePerFrame &frame_j = it_per_id.feature_per_frame[frame_count - 1 - it_per_id.start_frame];
 
@@ -419,8 +427,8 @@ double FeatureManager::compensatedParallax2(const FeaturePerId &it_per_id, int f
     double dep_i = p_i(2);
     double u_i = p_i(0) / dep_i;
     double v_i = p_i(1) / dep_i;
-    double du = u_i - u_j, dv = v_i - v_j;
-
+    double du = u_i - u_j, dv = v_i - v_j; // 归一化相机坐标系的坐标差
+    // 当都是归一化坐标系时，他们两个都是一样的
     double dep_i_comp = p_i_comp(2);
     double u_i_comp = p_i_comp(0) / dep_i_comp;
     double v_i_comp = p_i_comp(1) / dep_i_comp;

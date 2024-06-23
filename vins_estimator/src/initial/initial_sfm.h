@@ -32,9 +32,11 @@ struct ReprojectionError3D
 	{
 		T p[3];
 		ceres::QuaternionRotatePoint(camera_R, point, p);
-		p[0] += camera_T[0]; p[1] += camera_T[1]; p[2] += camera_T[2];
+		p[0] += camera_T[0]; p[1] += camera_T[1]; p[2] += camera_T[2]; // 其实就是Rcw * Pw + tcw
+		// 得到该相机坐标系下的3d坐标
 		T xp = p[0] / p[2];
-    	T yp = p[1] / p[2];
+    	T yp = p[1] / p[2]; // 归一化处理
+		// 跟现在观测形成残差
     	residuals[0] = xp - T(observed_u);
     	residuals[1] = yp - T(observed_v);
     	return true;

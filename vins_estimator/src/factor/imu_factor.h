@@ -58,9 +58,11 @@ class IMUFactor : public ceres::SizedCostFunction<15, 7, 9, 7, 9>
         // LLT分解，residual 还需乘以信息矩阵的sqrt_info
         // 因为优化函数其实是d=r^T P^-1 r ，P表示协方差，而ceres只接受最小二乘优化
         // 因此需要把P^-1做LLT分解，使d=(L^T r)^T (L^T r) = r'^T r
+        // 因为ceres没有g2o设置信息矩阵的接口，因此置信度直接乘在残差上，这里通过LLT分解，相当于将信息矩阵开根号
         Eigen::Matrix<double, 15, 15> sqrt_info = Eigen::LLT<Eigen::Matrix<double, 15, 15>>(pre_integration->covariance.inverse()).matrixL().transpose();
+        // 这就是带有信息矩阵的残差
         residual = sqrt_info * residual;
-
+        // 关于雅可比的计算手动推导下
         if (jacobians)
         {
             // 获取预积分的误差递推函数中pqv关于ba、bg的Jacobian

@@ -71,6 +71,7 @@ class MarginalizationInfo
 
 };
 
+// 由于边缘化的costfunction不是固定大小的，因此只能继承最基本的类
 class MarginalizationFactor : public ceres::CostFunction
 {
   public:

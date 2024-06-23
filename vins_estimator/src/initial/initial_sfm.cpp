@@ -6,6 +6,8 @@ GlobalSFM::GlobalSFM(){}
 void GlobalSFM::triangulatePoint(Eigen::Matrix<double, 3, 4> &Pose0, Eigen::Matrix<double, 3, 4> &Pose1,
 						Vector2d &point0, Vector2d &point1, Vector3d &point_3d)
 {
+	// 通过奇异值分解求解一个Ax = 0得到
+	// 参考视觉惯性SLAM P191-192
 	Matrix4d design_matrix = Matrix4d::Zero();
 	design_matrix.row(0) = point0[0] * Pose0.row(2) - Pose0.row(0);
 	design_matrix.row(1) = point0[1] * Pose0.row(2) - Pose0.row(1);
@@ -20,6 +22,14 @@ void GlobalSFM::triangulatePoint(Eigen::Matrix<double, 3, 4> &Pose0, Eigen::Matr
 }
 
 //PNP方法得到第l帧到第i帧的R_initial、P_initial
+/**
+ * @brief 根据上一帧的位姿通过pnp求解当前帧的位姿
+ * @param[in] R_initial 上一帧的位姿
+ * @param[in] P_initial 上一帧的位移
+ * @param[in] i 当前帧的索引
+ * @param[in] sfm_f 所有特征点的信息
+ * @return true
+ */
 bool GlobalSFM::solveFrameByPnP(Matrix3d &R_initial, Vector3d &P_initial, int i,
 								vector<SFMFeature> &sfm_f)
 {
@@ -27,6 +37,7 @@ bool GlobalSFM::solveFrameByPnP(Matrix3d &R_initial, Vector3d &P_initial, int i,
 	vector<cv::Point3f> pts_3_vector;
 	for (int j = 0; j < feature_num; j++)//要把待求帧i上所有特征点的归一化坐标和3D坐标(l系上)都找出来
 	{
+		// 是false则没有被三角化，pnp是3d到2d求解，因此需要3d点
 		if (sfm_f[j].state != true)//这个特征点没有被三角化为空间点，跳过这个点的PnP
 			continue;
 		Vector2d point2d;
@@ -132,11 +143,13 @@ bool GlobalSFM::construct(int frame_num, Quaterniond* q, Vector3d* T, int l,
 	//假设第l帧为原点，根据当前帧到第l帧的relative_R，relative_T，得到当前帧位姿
 	//relative_R和relative_T设为T_l_ck
 	//q[l]和T[l]设为T_w_l  即l为第一帧
+	// 枢纽帧设置为单位帧，也可以理解为世界系原点
 	q[l].w() = 1;
 	q[l].x() = 0;
 	q[l].y() = 0;
 	q[l].z() = 0;
 	T[l].setZero();
+	// 求得最后一帧的位姿
 	//T_w_ck = T_w_l * T_l_ck  这里得到当前帧位姿T_w_ck
 	q[frame_num - 1] = q[l] * Quaterniond(relative_R);//frame_num-1表示当前帧
 	T[frame_num - 1] = relative_T;
@@ -144,6 +157,7 @@ bool GlobalSFM::construct(int frame_num, Quaterniond* q, Vector3d* T, int l,
 	//cout << "init t_l " << T[l].transpose() << endl;
 
 	//rotate to cam frame
+	// 由于纯视觉slam处理都是Tcw，因此下面把Twc转成Tcw
 	Matrix3d c_Rotation[frame_num];
 	Vector3d c_Translation[frame_num];
 	Quaterniond c_Quat[frame_num];
@@ -152,7 +166,7 @@ bool GlobalSFM::construct(int frame_num, Quaterniond* q, Vector3d* T, int l,
 	Eigen::Matrix<double, 3, 4> Pose[frame_num];
 	
 	//（因为要三角化：这里以第l帧做参考系，就是说假设世界坐标系是l帧，而三角化输入的位姿是世界到相机系的，所以位姿是l帧到当前帧（世界->相机）
-
+	// 将枢纽帧和最后一帧Twc转成Tcw，包括四元数，旋转矩阵，平移向量和增广矩阵
 	c_Quat[l] = q[l].inverse();
 	c_Rotation[l] = c_Quat[l].toRotationMatrix();//c_Rotation是第l帧到当前帧
 	c_Translation[l] = -1 * (c_Rotation[l] * T[l]);
@@ -168,6 +182,11 @@ bool GlobalSFM::construct(int frame_num, Quaterniond* q, Vector3d* T, int l,
 	Pose[frame_num - 1].block<3, 1>(0, 3) = c_Translation[frame_num - 1];
 
 
+	// 以上准备工作做好后开始具体实现
+	//1: trangulate between l ----- frame_num - 1
+	//2: solve pnp l + 1; trangulate l + 1 ------- frame_num - 1; 
+	// Step1 求解枢纽帧到最后一帧之间的帧的位姿以及对应特征点的三角化处理
+
 	//1、先三角化第l帧（参考帧）与第frame_num-1帧（当前帧）的路标点
 	//2、pnp求解从第l+1开始的每一帧到第l帧的变换矩阵R_initial, P_initial，保存在Pose中
 	//并与当前帧进行三角化
@@ -176,6 +195,7 @@ bool GlobalSFM::construct(int frame_num, Quaterniond* q, Vector3d* T, int l,
 		if (i > l)
 		{
 			//T_ck_w
+			// 这是依次求解，因此上一帧的位姿是已知量
 			Matrix3d R_initial = c_Rotation[i - 1];
 			Vector3d P_initial = c_Translation[i - 1];
 			if(!solveFrameByPnP(R_initial, P_initial, i, sfm_f))
@@ -186,19 +206,25 @@ bool GlobalSFM::construct(int frame_num, Quaterniond* q, Vector3d* T, int l,
 			Pose[i].block<3, 3>(0, 0) = c_Rotation[i];
 			Pose[i].block<3, 1>(0, 3) = c_Translation[i];
 		}
-
+		// triangulate point based on the solve pnp result
+		// 当前帧和最后一帧进行三角化处理
 		triangulateTwoFrames(i, Pose[i], frame_num - 1, Pose[frame_num - 1], sfm_f);
 	}
 
+	// Step2 考虑有些特征点不能被最后一帧看到，因此fix枢纽帧，遍历枢纽帧到最后一帧进行特征点三角化
+	//3: triangulate l-----l+1 l+2 ... frame_num -2
 	//3、从第l+1帧到滑窗的最后的每一帧再与第l帧进行三角化补充3D坐标
 	for (int i = l + 1; i < frame_num - 1; i++)
 		triangulateTwoFrames(l, Pose[l], i, Pose[i], sfm_f);
 
-
+	// Step3 处理完枢纽帧到最后一帧，开始处理枢纽帧之前的帧
+	//4: solve pnp l-1; triangulate l-1 ----- l
+	//             l-2              l-2 ----- l
 	//4、对于在sliding window里在第l帧之前的每一帧，分别都和后一帧用PnP求它的位姿，得到位姿后再和第l帧三角化得到它们共视点的3D坐标  
 	for (int i = l - 1; i >= 0; i--)
 	{
 		//solve pnp
+		// 这种情况就是后一帧先求解出来， 然后往前面求解
 		Matrix3d R_initial = c_Rotation[i + 1];
 		Vector3d P_initial = c_Translation[i + 1];
 		if(!solveFrameByPnP(R_initial, P_initial, i, sfm_f))
@@ -214,13 +240,15 @@ bool GlobalSFM::construct(int frame_num, Quaterniond* q, Vector3d* T, int l,
 
 	//5、三角化其他未恢复的特征点。
 	//至此得到了滑动窗口中所有图像帧的位姿以及特征点的3d坐标
+	// Step4 得到了所有关键帧的位姿，遍历没有被三角化的特征点，进行三角化
 	for (int j = 0; j < feature_num; j++)
 	{
 		if (sfm_f[j].state == true)
 			continue;
-		if ((int)sfm_f[j].observation.size() >= 2)
+		if ((int)sfm_f[j].observation.size() >= 2) // 只有被两个以上的KF观测到才可以三角化
 		{
 			Vector2d point0, point1;
+			// 取首尾两个KF，尽量保证两KF之间足够位移
 			int frame_0 = sfm_f[j].observation[0].first;
 			point0 = sfm_f[j].observation[0].second;
 			int frame_1 = sfm_f[j].observation.back().first;
@@ -250,6 +278,9 @@ bool GlobalSFM::construct(int frame_num, Quaterniond* q, Vector3d* T, int l,
 */
 
 	//6、使用cares进行全局BA优化
+	//full BA
+	// Step5 求出了所有的位姿和3d点之后，进行一个视觉slam的global BA
+	// 需要参考ceres http://ceres.solver.org/
 	ceres::Problem problem;
 	ceres::LocalParameterization* local_parameterization = new ceres::QuaternionParameterization();
 	//cout << " begin full BA " << endl;
@@ -269,6 +300,8 @@ bool GlobalSFM::construct(int frame_num, Quaterniond* q, Vector3d* T, int l,
 		problem.AddParameterBlock(c_translation[i], 3);
 		//固定先验值
 		//因为l帧是参考系，最新帧的平移也是先验，如果不固定住，原本可观的量会变的不可观。
+		// 由于是单目视觉slam，有七个自由度不客观，因此，fix一些参数块避免在零空间漂移
+		// fix设置的世界坐标系第l帧的位姿，同时fix最后一帧的位移用来fix尺度
 		if (i == l)
 		{
 			problem.SetParameterBlockConstant(c_rotation[i]);
@@ -279,17 +312,19 @@ bool GlobalSFM::construct(int frame_num, Quaterniond* q, Vector3d* T, int l,
 		}
 	}
 
+	// 只有视觉重投影构成约束，因此遍历所有的特征点，构建约束
 	for (int i = 0; i < feature_num; i++)
 	{
 		if (sfm_f[i].state != true)
 			continue;
+		// 遍历所有的观测帧，对这些帧建立约束
 		for (int j = 0; j < int(sfm_f[i].observation.size()); j++)
 		{
 			int l = sfm_f[i].observation[j].first;
 			ceres::CostFunction* cost_function = ReprojectionError3D::Create(
 												sfm_f[i].observation[j].second.x(),
 												sfm_f[i].observation[j].second.y());
-
+			// 约束这一帧位姿和3d地图点
     		problem.AddResidualBlock(cost_function, NULL, c_rotation[l], c_translation[l], 
     								sfm_f[i].position);	 
 		}
@@ -314,6 +349,8 @@ bool GlobalSFM::construct(int frame_num, Quaterniond* q, Vector3d* T, int l,
 	
 	//这里得到的是第l帧坐标系到各帧的变换矩阵，应将其转变为各帧在第l帧坐标系上的位姿
 	//需要获得各帧在帧l系下的位姿(也就是各帧到l帧的旋转平移)，所以需要inverse操作，然后把特征点在帧l系下的3D坐标传递出来。
+	// 优化结束，把double数组的值返回成对应类型的值
+	// 同时Tcw -> Twc
 	for (int i = 0; i < frame_num; i++)
 	{
 		q[i].w() = c_rotation[i][0]; 
